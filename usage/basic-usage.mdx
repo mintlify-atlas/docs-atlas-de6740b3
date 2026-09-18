@@ -1,0 +1,136 @@
+---
+title: "Reading Files and Stdin with get_next_line"
+sidebarTitle: "Basic Usage"
+description: "Learn how to read files, standard input, and other streams line by line using get_next_line, including proper error handling and memory cleanup."
+---
+
+`get_next_line` gives you a simple, consistent interface for reading any file descriptor one line at a time. Each call returns a single heap-allocated string — including the trailing newline character when one is present — and advances an internal static pointer so the next call picks up exactly where the previous one left off. When the file is exhausted or an error occurs the function returns `NULL`, making it straightforward to drive from a `while` loop.
+
+## Reading a Regular File
+
+Open the file with `open()`, pass the resulting file descriptor to `get_next_line` in a loop, process each line, and `free()` it before the next iteration. When `get_next_line` returns `NULL` the file has been fully consumed (or an error occurred), so close the descriptor and exit the loop.
+
+```c
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "get_next_line.h"
+
+int main(void)
+{
+    int   fd;
+    char *line;
+
+    fd = open("example.txt", O_RDONLY);
+    if (fd == -1)
+    {
+        perror("open");
+        return (1);
+    }
+
+    while ((line = get_next_line(fd)) != NULL)
+    {
+        printf("%s", line);  /* line already contains '\n' if present */
+        free(line);          /* caller must free every returned line   */
+    }
+
+    close(fd);
+    return (0);
+}
+```
+
+Compile and run:
+
+```bash
+gcc -Wall -Wextra -Werror -D BUFFER_SIZE=32 \
+    get_next_line.c get_next_line_utils.c main.c -o reader
+./reader
+```
+
+## Reading from Standard Input
+
+`stdin` is file descriptor `0`. Pass it directly — no `open()` call needed:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include "get_next_line.h"
+
+int main(void)
+{
+    char *line;
+
+    /* fd 0 == stdin */
+    while ((line = get_next_line(0)) != NULL)
+    {
+        printf("Got: %s", line);
+        free(line);
+    }
+    return (0);
+}
+```
+
+The function behaves identically for `stdin` and any other file descriptor: it reads up to `BUFFER_SIZE` bytes at a time, accumulates them in an internal `leftover` buffer, and returns a complete line on each call.
+
+## When `get_next_line` Returns `NULL`
+
+`get_next_line` returns `NULL` in three situations:
+
+| Situation | Details |
+|-----------|---------|
+| **EOF reached** | All bytes have been read from the fd; the last `read()` call returned `0`. |
+| **Read error** | `read()` returned `-1`; check `errno` for the underlying cause. |
+| **Invalid arguments** | `fd < 0` or the compile-time `BUFFER_SIZE <= 0` — the guard at the top of `get_next_line` returns `NULL` immediately: `if (fd < 0 \|\| BUFFER_SIZE <= 0) return (NULL);` |
+
+A normal end-of-file loop looks like this:
+
+```c
+while ((line = get_next_line(fd)) != NULL)
+{
+    /* process line */
+    free(line);
+}
+/* NULL returned — could be EOF or error; inspect errno to distinguish */
+```
+
+## Error Handling
+
+Because both EOF and a genuine read error produce a `NULL` return, set `errno` to `0` before the loop if you need to tell them apart:
+
+```c
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "get_next_line.h"
+
+int main(void)
+{
+    int   fd;
+    char *line;
+
+    fd = open("data.txt", O_RDONLY);
+    if (fd == -1)
+    {
+        perror("open");
+        return (1);
+    }
+
+    errno = 0;
+    while ((line = get_next_line(fd)) != NULL)
+    {
+        printf("%s", line);
+        free(line);
+    }
+
+    if (errno != 0)
+        perror("get_next_line: read error");
+
+    close(fd);
+    return (0);
+}
+```
+
+<Warning>
+Every non-`NULL` string returned by `get_next_line` is heap-allocated by the function and **must be freed by the caller**. Failing to call `free(line)` after processing each line will leak memory. Because `get_next_line` uses a static internal buffer, you do not need to free anything when it returns `NULL` — but every intermediate line returned during normal reading is your responsibility to release.
+</Warning>

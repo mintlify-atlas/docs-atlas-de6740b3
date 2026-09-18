@@ -1,0 +1,141 @@
+---
+title: "Tuning BUFFER_SIZE for Performance and Memory"
+sidebarTitle: "Buffer Size"
+description: "Configure the BUFFER_SIZE compile-time macro to balance read syscall frequency against heap memory usage for your specific workload."
+---
+
+`BUFFER_SIZE` is a compile-time macro that controls how many bytes `get_next_line` requests from the operating system in each `read()` call. It is not a maximum line length — lines can be arbitrarily long regardless of the value — it is purely the size of the temporary heap buffer allocated inside `read_and_save` on every call. If you do not supply a value at compile time the header provides a conservative default of `10`:
+
+```c
+# ifndef BUFFER_SIZE
+#  define BUFFER_SIZE 10
+# endif
+```
+
+Choosing the right value is a trade-off: a smaller buffer reduces per-call heap allocation but triggers more `read()` syscalls to assemble each line, while a larger buffer fetches more data in one shot but consumes more memory on every `read_and_save` invocation.
+
+## What `BUFFER_SIZE` Controls
+
+Inside `read_and_save`, every iteration of the read loop performs:
+
+```c
+buffer = malloc(sizeof(char) * (BUFFER_SIZE + 1));
+/* ... */
+bytes_read = read(fd, buffer, BUFFER_SIZE);
+```
+
+`BUFFER_SIZE` therefore determines both the size of each `malloc` and the maximum number of bytes handed to `read()` per syscall. The loop continues until a newline is found in `leftover` or the fd returns `0` bytes, so a large `BUFFER_SIZE` can satisfy a full line in a single syscall while a small one may need dozens.
+
+## Setting `BUFFER_SIZE` at Compile Time
+
+Pass the `-D` flag to `gcc` to override the default:
+
+```bash
+gcc -Wall -Wextra -Werror -D BUFFER_SIZE=4096 \
+    get_next_line.c get_next_line_utils.c main.c -o reader
+```
+
+<Tabs>
+  <Tab title="Small files / stdin">
+    **Recommended range: 1 – 64**
+
+    A tiny buffer keeps heap allocations small and is fine when files are short or when reading interactively from `stdin` where each `read()` typically returns one typed line anyway. The extra syscall overhead is negligible at low volume.
+
+    ```bash
+    gcc -D BUFFER_SIZE=16 get_next_line.c get_next_line_utils.c main.c -o reader
+    ```
+
+    ```c
+    /* With BUFFER_SIZE=16 reading "Hello, World!\n" needs one read() call
+       since the line fits in 16 bytes. A longer line would need multiple. */
+    char *line = get_next_line(0);   /* fd 0 = stdin */
+    printf("%s", line);
+    free(line);
+    ```
+
+    **Characteristics:**
+    - Heap allocation per `read_and_save` call: 17 bytes (16 + 1 for `\0`)
+    - More `read()` syscalls for long lines
+    - Suitable for interactive input or configuration files with short lines
+  </Tab>
+  <Tab title="General use">
+    **Recommended range: 256 – 1024**
+
+    A mid-range buffer hits a good balance for most workloads: syscall count stays low for typical log or text files while memory usage remains modest. This is the most common choice for general-purpose programs.
+
+    ```bash
+    gcc -D BUFFER_SIZE=512 get_next_line.c get_next_line_utils.c main.c -o reader
+    ```
+
+    ```c
+    /* With BUFFER_SIZE=512 most lines in a typical text file are read
+       in a single syscall, with leftover bytes cached for the next call. */
+    int   fd   = open("log.txt", O_RDONLY);
+    char *line;
+
+    while ((line = get_next_line(fd)) != NULL)
+    {
+        process(line);
+        free(line);
+    }
+    close(fd);
+    ```
+
+    **Characteristics:**
+    - Heap allocation per `read_and_save` call: 513 bytes
+    - One syscall covers most lines under 512 bytes
+    - Good default for application code
+  </Tab>
+  <Tab title="Large files / performance">
+    **Recommended range: 4096 – 8192**
+
+    Align `BUFFER_SIZE` with the system page size (4096 bytes on most platforms) to maximise I/O throughput. The kernel can satisfy page-aligned reads more efficiently, and the number of syscalls drops significantly for large files.
+
+    ```bash
+    gcc -D BUFFER_SIZE=4096 get_next_line.c get_next_line_utils.c main.c -o reader
+    ```
+
+    ```c
+    /* Reading a 100 MB log file with BUFFER_SIZE=4096 reduces syscalls
+       by ~400x compared to BUFFER_SIZE=10. */
+    int   fd   = open("huge.log", O_RDONLY);
+    char *line;
+
+    while ((line = get_next_line(fd)) != NULL)
+    {
+        process(line);
+        free(line);
+    }
+    close(fd);
+    ```
+
+    **Characteristics:**
+    - Heap allocation per `read_and_save` call: 4097 bytes
+    - Dramatically fewer syscalls for large files
+    - Higher per-call memory footprint — size according to available RAM
+  </Tab>
+</Tabs>
+
+## Guard Check in Source
+
+The very first thing `get_next_line` does is validate both the fd and the `BUFFER_SIZE`:
+
+```c
+char *get_next_line(int fd)
+{
+    static char *leftover;
+    char        *line;
+
+    if (fd < 0 || BUFFER_SIZE <= 0)
+        return (NULL);
+    /* ... */
+}
+```
+
+<Warning>
+If `BUFFER_SIZE` is defined as `0` or a negative number the guard `if (fd < 0 || BUFFER_SIZE <= 0)` is triggered on **every** call and `get_next_line` always returns `NULL`. The function will never read any data. Make sure you pass a positive integer via `-D BUFFER_SIZE=<value>` or rely on the default of `10` provided by the header.
+</Warning>
+
+<Note>
+Every time `read_and_save` iterates it allocates a fresh `BUFFER_SIZE + 1` byte buffer with `malloc`. For very large values (e.g., `BUFFER_SIZE=1048576` for 1 MB) this memory is allocated on the heap on each call regardless of how many bytes are actually available on the fd. Size `BUFFER_SIZE` according to the available memory on your target system and the expected line lengths in your input.
+</Note>

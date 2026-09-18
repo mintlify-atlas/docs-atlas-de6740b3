@@ -1,0 +1,108 @@
+---
+title: "get_next_line — Read One Line from a File Descriptor"
+sidebarTitle: "get_next_line"
+description: "Complete reference for char *get_next_line(int fd): parameters, return values, error conditions, and behaviour differences between standard and bonus variants."
+---
+
+`get_next_line` reads one line at a time from an open file descriptor, advancing an internal position on each successive call. It handles files of any size by reading in fixed-size chunks of `BUFFER_SIZE` bytes, accumulating data in a static leftover buffer between calls. The returned string is heap-allocated and must be freed by the caller. When the file is exhausted or an error occurs, the function returns `NULL` and resets any leftover state for that descriptor.
+
+## Function Signature
+
+```c
+char *get_next_line(int fd);
+```
+
+## Parameter
+
+<ParamField path="fd" type="int" required>
+  The file descriptor to read from. Must be a non-negative integer (`>= 0`). In the **bonus variant**, `fd` must also be strictly less than `MAX_FD` (10240); passing a value outside this range returns `NULL` immediately.
+</ParamField>
+
+## Return Value
+
+| Condition | Return value |
+|-----------|-------------|
+| A line is available | A heap-allocated `char *` containing the line, including the terminating `\n` if one was present in the file. The caller is responsible for calling `free()` on this pointer. |
+| EOF reached with no remaining data | `NULL`. The internal leftover for this fd is also reset to `NULL`. |
+| `fd < 0` | `NULL` (no read attempted). |
+| `BUFFER_SIZE <= 0` | `NULL` (no read attempted). |
+| `fd >= MAX_FD` *(bonus only)* | `NULL` (no read attempted). |
+| `read(2)` returns `-1` | `NULL`. Both the internal buffer and leftover are freed. |
+| `malloc` fails at any point | `NULL`. Any partially allocated buffers are freed before returning. |
+
+The return value on EOF with no data and on error is the same (`NULL`). If your program needs to distinguish between the two, check `errno` after the call — a `read(2)` failure sets `errno`, whereas a clean EOF does not.
+
+## Standard vs. Bonus
+
+The project ships two functionally equivalent implementations that differ only in how they track per-fd state.
+
+### Standard (`get_next_line.c`)
+
+```c
+char *get_next_line(int fd)
+{
+    static char *leftover;
+    ...
+}
+```
+
+A single `static char *leftover` is shared across **all** file descriptors. This means that interleaving calls on two different fds (e.g., reading alternately from fd 3 and fd 4) will corrupt the leftover data for the fd that is not currently being read. Use the standard variant only when your program reads from one fd at a time.
+
+### Bonus (`get_next_line_bonus.c`)
+
+```c
+char *get_next_line(int fd)
+{
+    static char *leftover[MAX_FD];
+    ...
+}
+```
+
+The leftover is an array of `MAX_FD` (10240) pointers, indexed by `fd`. Each file descriptor maintains its own independent reading position. Calls on different fds can be freely interleaved without any interference.
+
+| | Standard | Bonus |
+|---|---|---|
+| Leftover storage | `static char *leftover` | `static char *leftover[MAX_FD]` |
+| Concurrent fd support | ❌ One fd at a time | ✅ Up to `MAX_FD` fds |
+| Max valid `fd` | Depends on OS limits | `MAX_FD - 1` (10239) |
+| Additional guard | `fd < 0` | `fd < 0 \|\| fd >= MAX_FD` |
+
+## Edge Cases
+
+- **`fd < 0`** — The function returns `NULL` immediately without attempting a `read(2)` call. This check appears as the very first thing in `get_next_line`.
+- **`BUFFER_SIZE <= 0`** — Checked alongside `fd < 0`; returns `NULL` immediately. The macro defaults to `10` if not defined at compile time.
+- **Empty file (zero bytes)** — `read(2)` returns `0` on the first call, so the leftover remains an empty string (`""`). `extract_line` treats an empty or NULL string as no data and returns `NULL`. The leftover is then set to `NULL` by `update_leftover`.
+- **File with no trailing newline** — On the last line, `read(2)` reaches EOF before a `\n` is found. `extract_line` copies up to `\0` rather than `\n`, so the partial line is returned without a trailing newline. The subsequent call finds an empty leftover and returns `NULL`.
+- **Bonus: `fd >= MAX_FD` (10240)** — Returns `NULL` immediately. Attempting to index `leftover[fd]` would be an out-of-bounds array access; the guard prevents undefined behaviour.
+
+## Usage Example
+
+```c
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "get_next_line.h"
+
+int main(void)
+{
+    int     fd;
+    char    *line;
+
+    fd = open("example.txt", O_RDONLY);
+    if (fd < 0)
+        return (1);
+
+    /* Read every line until EOF */
+    while ((line = get_next_line(fd)) != NULL)
+    {
+        printf("%s", line);
+        free(line);          /* caller must free each returned line */
+    }
+    close(fd);
+    return (0);
+}
+```
+
+<Note>
+  Compile with a custom buffer size by passing `-D BUFFER_SIZE=<n>` to your compiler (e.g., `cc -D BUFFER_SIZE=128 ...`). Values of `0` or below cause every call to return `NULL` immediately, as guarded inside the function.
+</Note>

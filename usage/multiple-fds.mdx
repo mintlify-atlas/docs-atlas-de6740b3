@@ -1,0 +1,99 @@
+---
+title: "Reading Multiple File Descriptors Simultaneously"
+sidebarTitle: "Multiple FDs"
+description: "Use the get_next_line bonus variant to interleave reads from up to 10,240 file descriptors at the same time, each tracked independently."
+---
+
+The standard implementation of `get_next_line` keeps a single `static char *leftover` variable inside the function. That pointer accumulates bytes read beyond the most recent newline so they are available for the next call. This works perfectly when you always read from the same file descriptor, but if you switch to a different fd mid-stream the leftover bytes from the previous fd are silently discarded and the read position of the new fd is corrupted — the two streams share one buffer slot. The **bonus variant** solves this by replacing the single pointer with a fixed-size array: `static char *leftover[MAX_FD]`, where `MAX_FD = 10240`. Each fd gets its own independent slot, so you can interleave calls across as many descriptors as you like without any cross-contamination.
+
+## Standard vs. Bonus: Comparison
+
+| | Standard | Bonus |
+|---|---|---|
+| **Source files** | `get_next_line.c`, `get_next_line_utils.c` | `get_next_line_bonus.c`, `get_next_line_utils_bonus.c` |
+| **Header** | `get_next_line.h` | `get_next_line_bonus.h` |
+| **Internal state** | `static char *leftover` — single pointer | `static char *leftover[MAX_FD]` — one slot per fd |
+| **Max simultaneous fds** | 1 (switching fds corrupts state) | Up to `MAX_FD` (10240) |
+| **fd bounds check** | `fd < 0` | `fd < 0 \|\| fd >= MAX_FD` |
+| **Function signature** | `char *get_next_line(int fd)` | `char *get_next_line(int fd)` (identical) |
+
+The public API is exactly the same — only the files you compile change.
+
+<Note>
+`MAX_FD` is defined as `10240` in `get_next_line_bonus.h`. Any fd value greater than or equal to `10240` will cause `get_next_line` to return `NULL` immediately due to the bounds check: `if (fd < 0 || fd >= MAX_FD || BUFFER_SIZE <= 0) return (NULL);`
+</Note>
+
+## Example: Alternating Reads from Two Files
+
+The example below opens two files and alternates one `get_next_line` call per file per loop iteration. Each fd's leftover buffer is maintained independently, so neither stream loses data.
+
+```c
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "get_next_line_bonus.h"
+
+int main(void)
+{
+    int   fd1;
+    int   fd2;
+    char *line1;
+    char *line2;
+
+    fd1 = open("file_a.txt", O_RDONLY);
+    if (fd1 == -1)
+    {
+        perror("open file_a.txt");
+        return (1);
+    }
+
+    fd2 = open("file_b.txt", O_RDONLY);
+    if (fd2 == -1)
+    {
+        perror("open file_b.txt");
+        close(fd1);
+        return (1);
+    }
+
+    /* Alternate one line from each file per iteration.
+       Each fd has its own leftover[fd] slot — no cross-contamination. */
+    while (1)
+    {
+        line1 = get_next_line(fd1);
+        line2 = get_next_line(fd2);
+
+        if (!line1 && !line2)
+            break ;
+
+        if (line1)
+        {
+            printf("[fd1] %s", line1);
+            free(line1);
+        }
+        if (line2)
+        {
+            printf("[fd2] %s", line2);
+            free(line2);
+        }
+    }
+
+    close(fd1);
+    close(fd2);
+    return (0);
+}
+```
+
+## Compiling the Bonus Variant
+
+Replace the standard source files with their `_bonus` counterparts and include the bonus header. Everything else — including the `-D BUFFER_SIZE` flag — works the same way.
+
+```bash
+gcc -Wall -Wextra -Werror -D BUFFER_SIZE=64 \
+    get_next_line_bonus.c get_next_line_utils_bonus.c main.c \
+    -o reader_bonus
+./reader_bonus
+```
+
+<Tip>
+On Linux the default per-process open-file limit is **1024** (`ulimit -n`). Even though the bonus variant supports up to 10240 simultaneous file descriptors, the kernel will refuse `open()` calls beyond the current limit. To raise it for your shell session run `ulimit -n 10240` before executing your program. For a permanent system-wide change, edit `/etc/security/limits.conf`.
+</Tip>

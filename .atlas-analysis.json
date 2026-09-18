@@ -1,0 +1,48 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "get_next_line",
+  "projectDescription": "A C library function that reads one line at a time from a file descriptor, with a bonus variant supporting multiple simultaneous file descriptors.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#3B82F6",
+  "darkColor": "#1D4ED8",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": ["introduction", "quickstart"]
+      },
+      {
+        "group": "Usage Guide",
+        "pages": ["usage/basic-usage", "usage/multiple-fds", "usage/buffer-size"]
+      },
+      {
+        "group": "API Reference",
+        "pages": ["api/get_next_line", "api/helper-functions"]
+      },
+      {
+        "group": "Internals",
+        "pages": ["internals/how-it-works", "internals/memory-management"]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Reads one line at a time from any file descriptor",
+    "Configurable buffer size via BUFFER_SIZE compile-time macro",
+    "Static leftover buffer preserves unread data between calls",
+    "Bonus variant supports up to 10240 simultaneous open file descriptors",
+    "Zero external dependencies — only stdlib.h and unistd.h",
+    "Proper memory management with no leaks on error paths"
+  ],
+  "publicApiSurface": [
+    "char *get_next_line(int fd)",
+    "BUFFER_SIZE (compile-time macro, default 10)",
+    "MAX_FD (bonus only, value 10240)",
+    "size_t ft_strlen(char *str)",
+    "int has_newline(char *str)",
+    "char *ft_strjoin(char *s1, char *s2)",
+    "char *extract_line(char *str)",
+    "char *update_leftover(char *str)",
+    "char *read_and_save(int fd, char *leftover)"
+  ]
+}

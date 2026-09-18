@@ -1,0 +1,155 @@
+---
+title: "Helper Functions in get_next_line"
+sidebarTitle: "Helper Functions"
+description: "Reference for the internal helper functions used by get_next_line: ft_strlen, has_newline, ft_strjoin, extract_line, update_leftover, and read_and_save."
+---
+
+The `get_next_line` project is split into a main file and a utilities file to keep the line-reading logic separate from the low-level string operations it depends on. All six helper functions below are declared in the public header (`get_next_line.h` for the standard build, `get_next_line_bonus.h` for the bonus build) and implemented in `get_next_line_utils.c` and `get_next_line_utils_bonus.c` respectively. Together they handle length calculation, newline detection, string joining, line extraction, leftover trimming, and the buffered read loop.
+
+<Note>
+  Because these functions are declared in the public headers (`get_next_line.h` / `get_next_line_bonus.h`), they can be reused freely in other C projects that include those headers. They are, however, primarily designed to support `get_next_line` internally and carry no stability guarantee outside that context.
+</Note>
+
+---
+
+## `ft_strlen`
+
+```c
+size_t ft_strlen(char *str);
+```
+
+Returns the number of characters in `str`, not counting the terminating `\0`. Mirrors the behaviour of the standard `strlen(3)` but adds a NULL guard absent from the C standard library version.
+
+<ParamField path="str" type="char *">
+  The string to measure. May be `NULL`.
+</ParamField>
+
+**Returns** (`size_t`): the length of the string, or `0` if `str` is `NULL`.
+
+---
+
+## `has_newline`
+
+```c
+int has_newline(char *str);
+```
+
+Scans `str` character by character looking for a newline (`\n`). This is used by `read_and_save` to decide whether enough data has been accumulated to extract a complete line, so that unnecessary `read(2)` calls are avoided.
+
+<ParamField path="str" type="char *">
+  The string to scan. May be `NULL`.
+</ParamField>
+
+**Returns** (`int`): `1` if a `\n` character is present anywhere in `str`, `0` if `str` is `NULL` or contains no newline.
+
+---
+
+## `ft_strjoin`
+
+```c
+char *ft_strjoin(char *s1, char *s2);
+```
+
+Allocates a new string on the heap whose content is the concatenation of `s1` followed by `s2`. The allocation size is `ft_strlen(s1) + ft_strlen(s2) + 1` bytes (the `+1` is for the terminating `\0`). Because `ft_strlen` returns `0` for `NULL`, either argument may be `NULL` and will be treated as an empty string.
+
+`read_and_save` calls this function on every read iteration to append the freshly read buffer chunk to the accumulated leftover. After the join, the old `leftover` pointer is freed; only the newly returned pointer is kept.
+
+<ParamField path="s1" type="char *">
+  The left-hand string. May be `NULL` (treated as `""`).
+</ParamField>
+
+<ParamField path="s2" type="char *">
+  The right-hand string. May be `NULL` (treated as `""`).
+</ParamField>
+
+**Returns** (`char *`): a heap-allocated string containing `s1 + s2`, or `NULL` if `malloc` fails. Does **not** free `s1` or `s2`; the caller is responsible for freeing those.
+
+---
+
+## `extract_line`
+
+```c
+char *extract_line(char *str);
+```
+
+Allocates and returns a copy of `str` from its beginning up to and including the first `\n` character. If no `\n` is found, the copy extends to the `\0` terminator — this is the path taken for the final line of a file that lacks a trailing newline. The original `str` is left untouched.
+
+`get_next_line` calls this function on the accumulated leftover to produce the return value for the current call.
+
+<ParamField path="str" type="char *">
+  The source string. If `NULL` or an empty string (`str[0] == '\0'`), the function returns `NULL` without allocating anything.
+</ParamField>
+
+**Returns** (`char *`): a heap-allocated string containing the first line (with `\n` if present), `NULL` if `str` is `NULL` or empty, or `NULL` on `malloc` failure.
+
+---
+
+## `update_leftover`
+
+```c
+char *update_leftover(char *str);
+```
+
+Advances the leftover state past the line that was just extracted. It scans `str` for the first `\n`, then allocates a new string containing everything **after** that `\n`. The original `str` is always freed before returning.
+
+If no `\n` is found in `str` (i.e., the entire leftover was consumed by `extract_line` as a partial final line), the function frees `str` and returns `NULL`, which signals to the next `get_next_line` call that there is no leftover to resume from.
+
+`get_next_line` assigns the return value of this function back to the same `leftover` variable (or `leftover[fd]` in the bonus) immediately after calling `extract_line`.
+
+<ParamField path="str" type="char *">
+  The current leftover string, which will be freed by this function regardless of outcome. Must not be `NULL` (the function is only called when `leftover` is non-NULL).
+</ParamField>
+
+**Returns** (`char *`): a new heap-allocated string containing the content after the first `\n`, `NULL` if there is no `\n` in `str` (freeing `str` first), or `NULL` on `malloc` failure (also freeing `str`).
+
+---
+
+## `read_and_save`
+
+```c
+char *read_and_save(int fd, char *leftover);
+```
+
+The central read loop. Allocates a temporary buffer of `BUFFER_SIZE + 1` bytes, then repeatedly calls `read(2)` and appends each chunk to `leftover` via `ft_strjoin` until either a `\n` is found in the accumulated leftover or EOF is reached (`read(2)` returns `0`). The `+1` in the allocation ensures there is always room to null-terminate the freshly read chunk (`buffer[bytes_read] = '\0'`).
+
+On each iteration, the old `leftover` pointer is freed by `ft_strjoin`'s caller (`save_buffer`) and replaced with the newly joined string. The temporary `buffer` is freed once the loop exits. On any error, both `buffer` and `leftover` are freed and `NULL` is returned.
+
+This function is `static` in `get_next_line.c` (standard build) and exported (non-static) in `get_next_line_bonus.c` / declared in `get_next_line_bonus.h` (bonus build).
+
+<ParamField path="fd" type="int">
+  The file descriptor to read from. Assumed valid; the calling `get_next_line` has already verified `fd >= 0` (and `fd < MAX_FD` in the bonus variant).
+</ParamField>
+
+<ParamField path="leftover" type="char *">
+  The accumulated but not-yet-returned string from previous calls on this fd. May be `NULL` on the very first call; `ft_strjoin` treats `NULL` as an empty string.
+</ParamField>
+
+**Returns** (`char *`): the updated heap-allocated leftover string (containing at least one `\n`, or all remaining file data up to EOF), or `NULL` on `malloc` failure or a `read(2)` error.
+
+```c
+char *read_and_save(int fd, char *leftover)
+{
+    char    *buffer;
+    ssize_t  bytes_read;
+
+    buffer = malloc(sizeof(char) * (BUFFER_SIZE + 1));
+    if (!buffer)
+        return (NULL);
+    bytes_read = 1;
+    while (!has_newline(leftover) && bytes_read != 0)
+    {
+        bytes_read = read(fd, buffer, BUFFER_SIZE);
+        if (read_error(bytes_read, buffer, leftover))
+            return (NULL);
+        buffer[bytes_read] = '\0';
+        leftover = save_buffer(leftover, buffer);
+        if (!leftover)
+        {
+            free(buffer);
+            return (NULL);
+        }
+    }
+    free(buffer);
+    return (leftover);
+}
+```

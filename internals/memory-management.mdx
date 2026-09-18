@@ -1,0 +1,185 @@
+---
+title: "Memory Management in get_next_line"
+sidebarTitle: "Memory Management"
+description: "Understand how get_next_line allocates and frees heap memory across calls, what the caller must free, and how error paths avoid leaks."
+---
+
+`get_next_line` touches the heap on every call — allocating a scratch read buffer, growing a persistent leftover string, and producing a fresh string to hand back to the caller. Because C provides no garbage collection, each of those allocations must have a clear owner and a guaranteed free path. This page traces exactly where memory is allocated, where it is freed, and what falls on the caller's shoulders.
+
+---
+
+## The Three Categories of Heap Allocation
+
+### 1. Read Buffer — `malloc(BUFFER_SIZE + 1)`
+
+Inside `read_and_save`, a temporary scratch buffer is allocated once per call to hold raw bytes from `read()`:
+
+```c
+buffer = malloc(sizeof(char) * (BUFFER_SIZE + 1));
+if (!buffer)
+    return (NULL);
+```
+
+The extra byte (`+ 1`) reserves space for the NUL terminator that is written after every `read()` call (`buffer[bytes_read] = '\0'`). This buffer is:
+
+- **always freed** at the end of the loop (`free(buffer)`) on the happy path.
+- **freed immediately** inside `read_error` if `read()` returns `-1`.
+- **freed** before returning `NULL` if `save_buffer` fails inside the loop.
+
+The caller never sees this pointer. Its lifetime is entirely internal to `read_and_save`.
+
+### 2. Leftover — grown via `ft_strjoin` + `save_buffer`
+
+The persistent accumulator between calls is the `static char *leftover` (or `static char *leftover[MAX_FD]` in the bonus). Each time a new chunk arrives from `read()`, `save_buffer` concatenates it onto the existing leftover:
+
+```c
+static char *save_buffer(char *leftover, char *buffer)
+{
+    char    *new;
+
+    new = ft_strjoin(leftover, buffer);
+    if (!new)
+    {
+        free(leftover);
+        return (NULL);
+    }
+    free(leftover);
+    return (new);
+}
+```
+
+`ft_strjoin` always allocates a **brand-new string** large enough to hold both inputs concatenated. `save_buffer` then frees the old `leftover` immediately afterwards — there is never more than one copy of the accumulated data alive at a time.
+
+After a line has been extracted, `update_leftover` frees the current leftover and replaces it with a smaller allocation containing only the bytes that follow the `\n`:
+
+```c
+free(str);          // free the old (full) leftover
+return (new_str);   // return the trimmed remainder
+```
+
+If no `\n` is present (EOF path), `update_leftover` frees the buffer and returns `NULL`, clearing the static pointer entirely.
+
+<Info>
+  The `static` pointer being `NULL` between reads is not a leak — it is the intended "empty" state. `ft_strjoin` calls `ft_strlen` on both arguments, and `ft_strlen` returns `0` for a `NULL` pointer, so joining `NULL` with a new chunk works correctly and produces a string that starts with the new chunk.
+</Info>
+
+### 3. Line (Return Value) — allocated by `extract_line`
+
+The string returned to the caller is a fresh `malloc` inside `extract_line`:
+
+```c
+line = malloc(sizeof(char) * (i + 1));
+```
+
+where `i` is the number of characters up to and including the `\n` (or up to the NUL terminator at EOF). `get_next_line` returns this pointer directly:
+
+```c
+line = extract_line(leftover);
+leftover = update_leftover(leftover);
+return (line);
+```
+
+**This allocation is never freed by `get_next_line` or any of its helpers.** Ownership is transferred to the caller. The caller must `free()` it.
+
+---
+
+## Error Paths and the `read_error` Helper
+
+When `read()` returns `-1`, both the scratch buffer and the current leftover must be freed before returning `NULL` — otherwise neither pointer can be reached again. The `read_error` helper centralises this clean-up:
+
+```c
+static int read_error(ssize_t bytes_read, char *buffer, char *leftover)
+{
+    if (bytes_read == -1)
+    {
+        free(buffer);
+        free(leftover);
+        return (1);
+    }
+    return (0);
+}
+```
+
+Returning `1` signals failure; `read_and_save` propagates `NULL` up to `get_next_line`, which in turn returns `NULL` to the caller. After this point the static `leftover` pointer holds a dangling address — but because `read_error` already freed it, the next call that passes `leftover` to `read_and_save` will pass `NULL`, which is safe.
+
+<Warning>
+  **Failing to `free()` the line returned by `get_next_line` on every iteration is the most common source of memory leaks when using this function.** Because each call allocates a new string, even a single missed `free()` inside a read loop will silently accumulate leaked memory proportional to the number of lines in the file.
+</Warning>
+
+---
+
+## Avoiding Memory Leaks
+
+### Always free the returned line
+
+The minimal correct usage pattern is:
+
+```c
+char *line;
+
+while ((line = get_next_line(fd)) != NULL)
+{
+    /* use line */
+    printf("%s", line);
+    free(line);   /* must happen on every iteration */
+}
+```
+
+Storing `line` elsewhere before freeing is fine, but the original pointer must eventually be freed by whoever owns it.
+
+### Draining the fd to clear static state
+
+If you break out of a read loop early — before `get_next_line` returns `NULL` — the static `leftover` pointer still holds a live heap allocation. It will not be freed until either:
+
+- `get_next_line` is called again for the same fd and eventually reaches EOF, or
+- the program exits (at which point the OS reclaims all memory, but tools like Valgrind will still report it as a leak).
+
+To force the static state to be cleared cleanly after an early exit, drain the remaining lines before closing the fd:
+
+```c
+char *line;
+int  done = 0;
+
+while ((line = get_next_line(fd)) != NULL)
+{
+    if (!done && should_stop(line))
+        done = 1;   /* stop processing, but keep draining */
+    free(line);
+}
+/* leftover is now NULL — no heap memory outstanding */
+close(fd);
+```
+
+Alternatively, if reading to EOF is too expensive, you can free the static leftover by reading until `NULL` on an empty/closed descriptor, but draining to EOF is the most portable approach.
+
+### Verifying with Valgrind
+
+Run your program under Valgrind to catch any remaining leaks:
+
+```c
+valgrind --leak-check=full --track-origins=yes ./your_program
+```
+
+A clean run with no leaks should report:
+
+```
+LEAK SUMMARY:
+   definitely lost: 0 bytes in 0 blocks
+   indirectly lost: 0 bytes in 0 blocks
+```
+
+If you see `definitely lost` blocks pointing into `get_next_line` or `ft_strjoin`, the most likely cause is a loop that exits without freeing `line`, or an early break that left `leftover` allocated.
+
+<Note>
+  Valgrind tracks each `malloc` individually, so it will pinpoint the exact call site of any leaked allocation — making it straightforward to trace back to a missing `free(line)` in your loop.
+</Note>
+
+---
+
+## Allocation Lifetime Summary
+
+| Pointer | Allocated in | Freed in | Owner |
+|---------|-------------|----------|-------|
+| `buffer` | `read_and_save` | `read_and_save` (loop end) or `read_error` | Internal |
+| `leftover` / `leftover[fd]` | `ft_strjoin` via `save_buffer` | `save_buffer` (old copy), `update_leftover`, or `read_error` | Internal (static) |
+| `line` (return value) | `extract_line` | **Caller** | **Caller** |

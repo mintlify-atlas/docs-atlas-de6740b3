@@ -1,0 +1,244 @@
+---
+title: "How get_next_line Works Under the Hood"
+sidebarTitle: "How It Works"
+description: "A deep-dive into the static leftover buffer, the read loop, and the line extraction logic that makes get_next_line work across repeated calls."
+---
+
+`get_next_line` reads one line at a time from a file descriptor, returning each line (including its trailing `\n`) as a freshly allocated string. The key challenge it solves is that a single `read()` call rarely lands exactly on a newline boundary — bytes before and after a newline can arrive in the same chunk. The implementation handles this by maintaining a **static leftover buffer** that preserves unread bytes between successive calls, feeding them back into the next invocation before issuing any new `read()` syscall.
+
+## Execution Flow
+
+<Steps>
+  <Step title="Guard Check">
+    The very first thing `get_next_line` does is validate its inputs:
+
+    ```c
+    if (fd < 0 || BUFFER_SIZE <= 0)
+        return (NULL);
+    ```
+
+    - `fd < 0` catches invalid file descriptors (nothing to read from).
+    - `BUFFER_SIZE <= 0` guards against a compile-time misconfiguration — a zero or negative buffer size would make the subsequent `read()` loop either spin forever or invoke undefined behaviour.
+
+    If either condition is true, the function returns `NULL` immediately without touching the static state or allocating any memory.
+  </Step>
+
+  <Step title="read_and_save Loop">
+    After the guard, `get_next_line` delegates all I/O work to `read_and_save`:
+
+    ```c
+    char    *read_and_save(int fd, char *leftover)
+    {
+        char    *buffer;
+        ssize_t bytes_read;
+
+        buffer = malloc(sizeof(char) * (BUFFER_SIZE + 1));
+        if (!buffer)
+            return (NULL);
+        bytes_read = 1;
+        while (!has_newline(leftover) && bytes_read != 0)
+        {
+            bytes_read = read(fd, buffer, BUFFER_SIZE);
+            if (read_error(bytes_read, buffer, leftover))
+                return (NULL);
+            buffer[bytes_read] = '\0';
+            leftover = save_buffer(leftover, buffer);
+            if (!leftover)
+            {
+                free(buffer);
+                return (NULL);
+            }
+        }
+        free(buffer);
+        return (leftover);
+    }
+    ```
+
+    A single `BUFFER_SIZE + 1` byte heap buffer is allocated once for the entire loop. On each iteration:
+
+    1. `read(fd, buffer, BUFFER_SIZE)` fills `buffer` with up to `BUFFER_SIZE` bytes from the file descriptor.
+    2. `buffer[bytes_read] = '\0'` null-terminates the chunk so it can be treated as a C string.
+    3. `save_buffer(leftover, buffer)` concatenates the new chunk onto whatever was already in `leftover`, producing a new allocation (see [Memory Management](/internals/memory-management)).
+
+    The loop exits as soon as **either** condition is met:
+    - `has_newline(leftover)` returns `1` — there is now at least one complete line ready to extract.
+    - `bytes_read == 0` — EOF was reached; no more data to read from this fd.
+
+    The scratch `buffer` is freed before returning the grown `leftover`.
+
+    <Info>
+      `has_newline` is a simple linear scan through `leftover` that returns `1` the moment it finds a `\n`, or `0` if it reaches the NUL terminator without finding one. It also safely returns `0` for a `NULL` pointer, which is what `leftover` is on the very first call.
+    </Info>
+  </Step>
+
+  <Step title="extract_line">
+    With `leftover` now containing at least one complete line (or the tail of the file), `extract_line` carves out the return value:
+
+    ```c
+    char    *extract_line(char *str)
+    {
+        char    *line;
+        size_t  i;
+
+        if (!str || !str[0])
+            return (NULL);
+        i = 0;
+        while (str[i] && str[i] != '\n')
+            i++;
+        if (str[i] == '\n')
+            i++;
+        line = malloc(sizeof(char) * (i + 1));
+        if (!line)
+            return (NULL);
+        line[i] = '\0';
+        while (i > 0)
+        {
+            i--;
+            line[i] = str[i];
+        }
+        return (line);
+    }
+    ```
+
+    It walks `str` until it either hits `\n` or the NUL terminator. If it found a `\n`, it advances one more position so the newline is **included** in the returned line. It then `malloc`s a buffer of exactly the right size, copies the characters in reverse (a compact idiom to avoid a second index), null-terminates, and returns the new string.
+
+    <Note>
+      The returned string includes the `\n` character when one is present. Only the very last line of a file (if it has no trailing newline) will be returned without one.
+    </Note>
+  </Step>
+
+  <Step title="update_leftover">
+    After the line has been extracted, `update_leftover` advances the static buffer past the consumed line so the **next** call starts from the right place:
+
+    ```c
+    char    *update_leftover(char *str)
+    {
+        char    *new_str;
+        size_t  i;
+        size_t  j;
+
+        i = 0;
+        while (str[i] && str[i] != '\n')
+            i++;
+        if (!str[i])
+        {
+            free(str);
+            return (NULL);
+        }
+        i++;
+        new_str = malloc(sizeof(char) * (ft_strlen(str) - i + 1));
+        if (!new_str)
+        {
+            free(str);
+            return (NULL);
+        }
+        j = 0;
+        while (str[i])
+            new_str[j++] = str[i++];
+        new_str[j] = '\0';
+        free(str);
+        return (new_str);
+    }
+    ```
+
+    It scans forward to find the `\n`. Two outcomes are possible:
+
+    - **Newline found** — `i` is incremented to step over the `\n`. A new string is allocated containing only the bytes that come *after* it. The old `leftover` is freed.
+    - **No newline** (`!str[i]` is true at the NUL terminator) — the entire buffer has been consumed. `str` is freed and `NULL` is returned, which clears the static pointer. Subsequent calls will start with a fresh, empty `leftover`.
+
+    Any `malloc` failure here also frees `str` and returns `NULL`, preventing a leak of the old buffer.
+  </Step>
+
+  <Step title="Return">
+    Back in `get_next_line`, the extracted line is returned to the caller:
+
+    ```c
+    char    *get_next_line(int fd)
+    {
+        static char *leftover;
+        char        *line;
+
+        if (fd < 0 || BUFFER_SIZE <= 0)
+            return (NULL);
+        leftover = read_and_save(fd, leftover);
+        if (!leftover)
+            return (NULL);
+        line = extract_line(leftover);
+        leftover = update_leftover(leftover);
+        return (line);
+    }
+    ```
+
+    The caller receives a heap-allocated string and is **entirely responsible for calling `free()` on it**. The static `leftover` pointer is updated in place so the next call continues exactly where reading left off.
+  </Step>
+</Steps>
+
+---
+
+## The Static Leftover Buffer
+
+The entire design hinges on one declaration inside `get_next_line`:
+
+```c
+static char *leftover;
+```
+
+In C, a `static` local variable retains its value between function calls — it is initialised to `NULL` once (at program start) and from then on lives for the lifetime of the program. This makes it the perfect container for bytes that were read from the file descriptor but not yet returned to the caller.
+
+Consider what happens when `BUFFER_SIZE` is `10` and the file contains `"Hello, World!\nFoo\n"`:
+
+| Call | `read()` yields | `leftover` after loop | `extract_line` returns | `leftover` after update |
+|------|-----------------|-----------------------|------------------------|-------------------------|
+| 1st  | `"Hello, Worl"` then `"d!\nFoo\n"` | `"Hello, World!\nFoo\n"` | `"Hello, World!\n"` | `"Foo\n"` |
+| 2nd  | *(no read — newline already in leftover)* | `"Foo\n"` | `"Foo\n"` | `NULL` |
+| 3rd  | `bytes_read == 0` (EOF) | `NULL` | `NULL` (returned) | — |
+
+Without `static`, the bytes `"Foo\n"` that arrived in the second `read()` chunk during the first call would be lost forever.
+
+<Info>
+  Because `leftover` is `static`, only **one** fd can be managed by the standard version of `get_next_line` at a time. Interleaving calls with different fd values causes each call to overwrite the shared buffer with data from a different source. The bonus variant solves this — see below.
+</Info>
+
+---
+
+## Bonus Variant: Per-FD State
+
+The bonus implementation replaces the single pointer with an array indexed by file descriptor number:
+
+```c
+static char *leftover[MAX_FD];
+```
+
+where `MAX_FD` is defined as `10240` in `get_next_line_bonus.h` — enough to cover all file descriptors that can be open simultaneously on most systems.
+
+The guard check is extended to validate the fd is within array bounds:
+
+```c
+if (fd < 0 || fd >= MAX_FD || BUFFER_SIZE <= 0)
+    return (NULL);
+```
+
+Every subsequent access uses the fd as the array index:
+
+```c
+char    *get_next_line(int fd)
+{
+    static char *leftover[MAX_FD];
+    char        *line;
+
+    if (fd < 0 || fd >= MAX_FD || BUFFER_SIZE <= 0)
+        return (NULL);
+    leftover[fd] = read_and_save(fd, leftover[fd]);
+    if (!leftover[fd])
+        return (NULL);
+    line = extract_line(leftover[fd]);
+    leftover[fd] = update_leftover(leftover[fd]);
+    return (line);
+}
+```
+
+`leftover[fd]` gives each open file descriptor its own independent ring of leftover bytes. Calling `get_next_line(3)` and `get_next_line(4)` in any order is now safe — their state is completely isolated in `leftover[3]` and `leftover[4]` respectively.
+
+<Note>
+  The `static` array is zero-initialised at program start, so `leftover[fd]` begins as `NULL` for every fd — exactly the right starting state, since `ft_strjoin` and `has_newline` both handle a `NULL` first argument gracefully.
+</Note>

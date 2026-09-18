@@ -1,47 +1,128 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with get_next_line in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Compile get_next_line into your C project and read a file line by line in under five minutes with this step-by-step guide."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+`get_next_line` is distributed as plain C source files — there is no package to install and no build system to configure. You simply copy three files into your project, add one `#include`, and compile everything together. The guide below walks through each step for the standard single-descriptor variant.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Copy the source files">
+    Add the three standard-variant source files to your project directory:
 
     ```bash
-    npm install your-package
+    cp get_next_line.c get_next_line_utils.c get_next_line.h /path/to/your/project/
+    ```
+
+    Your project should now contain:
+
+    | File | Purpose |
+    |------|---------|
+    | `get_next_line.c` | Core logic: `get_next_line()` and helpers `read_and_save()` |
+    | `get_next_line_utils.c` | Utility functions: `ft_strlen`, `ft_strjoin`, `has_newline`, `extract_line`, `update_leftover` |
+    | `get_next_line.h` | Public header declaring all functions and the `BUFFER_SIZE` macro |
+  </Step>
+
+  <Step title="Include the header">
+    In every source file that calls `get_next_line`, add the following include at the top:
+
+    ```c
+    #include "get_next_line.h"
+    ```
+
+    This header pulls in `<stdlib.h>` and `<unistd.h>` automatically and declares the public function signature:
+
+    ```c
+    char *get_next_line(int fd);
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Compile">
+    Pass all three library files to your compiler alongside your own source. Use the `-D BUFFER_SIZE=<n>` flag to choose the read-chunk size (omit it to accept the default of `10`):
 
     ```bash
-    your-cli init
+    gcc -Wall -Wextra -Werror -D BUFFER_SIZE=42 \
+        main.c get_next_line.c get_next_line_utils.c \
+        -o my_program
     ```
+
+    The `-D BUFFER_SIZE=42` flag sets how many bytes are read from the file descriptor per `read()` call. Tune it to your workload — larger values (e.g. `4096`) reduce syscall overhead on large files.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Call get_next_line">
+    The function returns a **heap-allocated string** for each line, including the trailing `\n`. Call it in a loop until it returns `NULL` (end-of-file or error), and `free()` every line you receive.
+
+    Here is a complete `main.c` that opens a file passed as a command-line argument and prints every line:
+
+    ```c
+    #include <fcntl.h>   /* open() */
+    #include <stdio.h>   /* printf() */
+    #include <stdlib.h>  /* free() */
+    #include "get_next_line.h"
+
+    int main(int argc, char **argv)
+    {
+        int     fd;
+        char    *line;
+
+        if (argc != 2)
+        {
+            printf("Usage: %s <file>\n", argv[0]);
+            return (1);
+        }
+
+        fd = open(argv[1], O_RDONLY);
+        if (fd == -1)
+        {
+            printf("Error: could not open file '%s'\n", argv[1]);
+            return (1);
+        }
+
+        while ((line = get_next_line(fd)) != NULL)
+        {
+            printf("%s", line);
+            free(line);
+        }
+
+        close(fd);
+        return (0);
+    }
+    ```
+
+    Compile and run it:
 
     ```bash
-    your-cli start
+    gcc -Wall -Wextra -Werror -D BUFFER_SIZE=42 \
+        main.c get_next_line.c get_next_line_utils.c \
+        -o my_program
+
+    ./my_program some_file.txt
     ```
+
+    Each line — including its `\n` — is printed and then freed before the next call. When the file is exhausted, `get_next_line` returns `NULL` and the loop exits cleanly.
   </Step>
+
 </Steps>
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+Run your program under `valgrind` to verify there are no memory leaks:
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+```bash
+valgrind --leak-check=full --track-origins=yes ./my_program some_file.txt
+```
+
+Every line returned by `get_next_line` is a separate heap allocation. If `valgrind` reports lost blocks, check that every non-`NULL` return value in your loop is passed to `free()` before the next iteration — and that the final `NULL` return (which must **not** be freed) is handled correctly.
 </Tip>
+
+<Note>
+If your program needs to read from **multiple file descriptors at the same time** (e.g. several open files, or a mix of files and `stdin`), use the bonus variant instead. Replace the three standard files with:
+
+| File | Replaces |
+|------|---------|
+| `get_next_line_bonus.c` | `get_next_line.c` |
+| `get_next_line_utils_bonus.c` | `get_next_line_utils.c` |
+| `get_next_line_bonus.h` | `get_next_line.h` |
+
+The bonus `get_next_line` maintains a separate leftover buffer for every file descriptor up to `MAX_FD` (10240), so interleaved calls across different descriptors work correctly. The public function signature — `char *get_next_line(int fd)` — is identical; no changes to your calling code are needed.
+</Note>

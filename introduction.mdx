@@ -1,0 +1,88 @@
+---
+title: "get_next_line: A Line-Reading Library for C"
+sidebarTitle: "Introduction"
+description: "get_next_line reads one line at a time from any file descriptor. Learn what it does, how the standard and bonus variants differ, and when to use each."
+---
+
+`get_next_line` is a small, self-contained C library that lets you read a file — or any readable file descriptor — one line at a time, without knowing the file's size in advance or loading it entirely into memory. Rather than using higher-level helpers like `fgets`, it relies only on the POSIX `read` syscall plus a modest heap buffer, making it suitable for embedded environments, school projects, and any context where you want full control over how data is consumed from a descriptor.
+
+## Public Interface
+
+The entire library is exposed through a single function:
+
+```c
+char *get_next_line(int fd);
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `fd` | A valid, open file descriptor — from `open()`, `STDIN_FILENO`, a socket, or any other readable source. |
+
+**Return value**
+
+- On success, `get_next_line` returns a heap-allocated string containing the next line, **including the trailing `\n`** if one is present in the input.
+- At end-of-file, or if the last line contains no `\n`, the remaining content (without `\n`) is returned as usual.
+- Returns `NULL` when EOF has been reached and there is nothing left to read, or when an error occurs (e.g., `fd` is negative, `BUFFER_SIZE ≤ 0`, or a `malloc`/`read` failure).
+
+<Note>
+Every non-`NULL` string returned by `get_next_line` is heap-allocated. You are responsible for calling `free()` on each line once you are finished with it. Failing to do so will leak memory on every call. See the Quickstart page for a complete loop pattern that handles this correctly.
+</Note>
+
+## Standard vs. Bonus Variant
+
+The library ships in two flavours. Choose the one that matches your use case.
+
+<CardGroup cols={2}>
+  <Card title="Standard" icon="file">
+    Supports **one file descriptor at a time**. Internally uses a single `static char *leftover` variable to carry unconsumed bytes between calls. Ideal when your program reads from exactly one file or from `stdin`.
+
+    **Files:** `get_next_line.c`, `get_next_line_utils.c`, `get_next_line.h`
+
+    ```c
+    /* get_next_line.c */
+    char *get_next_line(int fd)
+    {
+        static char *leftover;
+        /* ... */
+    }
+    ```
+
+    Interleaving calls for two different `fd` values in the standard build is **undefined behaviour** because the single `leftover` pointer cannot track two independent read positions.
+  </Card>
+  <Card title="Bonus (Multi-FD)" icon="files">
+    Supports **up to `MAX_FD` concurrent file descriptors**. Internally uses `static char *leftover[MAX_FD]`, indexed by `fd`, so each descriptor gets its own leftover buffer.
+
+    **Files:** `get_next_line_bonus.c`, `get_next_line_utils_bonus.c`, `get_next_line_bonus.h`
+
+    ```c
+    /* get_next_line_bonus.c */
+    # define MAX_FD 10240
+
+    char *get_next_line(int fd)
+    {
+        static char *leftover[MAX_FD];
+        /* ... */
+    }
+    ```
+
+    The bonus variant also validates that `fd < MAX_FD` (10240) and returns `NULL` for out-of-range descriptors, making it safe to use in servers or tools that juggle many open files simultaneously.
+  </Card>
+</CardGroup>
+
+## BUFFER_SIZE
+
+Both variants read raw bytes from the kernel in chunks of `BUFFER_SIZE` bytes per `read()` call. The default value is **10**, defined in both headers as:
+
+```c
+# ifndef BUFFER_SIZE
+#  define BUFFER_SIZE 10
+# endif
+```
+
+You can override this at compile time with `-D BUFFER_SIZE=<n>`. Larger values reduce the number of `read` syscalls for big files; smaller values reduce per-call memory usage. Any value greater than `0` is valid.
+
+## Prerequisites
+
+- A C compiler: `cc`, `gcc`, or `clang`.
+- Standard POSIX headers: `<stdlib.h>` (for `malloc`/`free`) and `<unistd.h>` (for `read`).
+- No external libraries or build tools are required — the library compiles as plain C99/C11 source files you add directly to your project.
