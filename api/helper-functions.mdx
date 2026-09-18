@@ -1,5 +1,5 @@
 ---
-title: "Helper Functions in get_next_line"
+title: "get_next_line Helper Functions — Complete API Reference"
 sidebarTitle: "Helper Functions"
 description: "Reference for the internal helper functions used by get_next_line: ft_strlen, has_newline, ft_strjoin, extract_line, update_leftover, and read_and_save."
 ---
@@ -52,7 +52,7 @@ char *ft_strjoin(char *s1, char *s2);
 
 Allocates a new string on the heap whose content is the concatenation of `s1` followed by `s2`. The allocation size is `ft_strlen(s1) + ft_strlen(s2) + 1` bytes (the `+1` is for the terminating `\0`). Because `ft_strlen` returns `0` for `NULL`, either argument may be `NULL` and will be treated as an empty string.
 
-`read_and_save` calls this function on every read iteration to append the freshly read buffer chunk to the accumulated leftover. After the join, the old `leftover` pointer is freed; only the newly returned pointer is kept.
+`read_and_save` calls this function on every read iteration to append the freshly read buffer chunk to the accumulated leftover. After `ft_strjoin` returns, the wrapping `save_buffer` function frees the old `leftover` pointer; only the newly returned pointer is kept. `ft_strjoin` itself never frees either of its arguments.
 
 <ParamField path="s1" type="char *">
   The left-hand string. May be `NULL` (treated as `""`).
@@ -114,7 +114,7 @@ The central read loop. Allocates a temporary buffer of `BUFFER_SIZE + 1` bytes, 
 
 On each iteration, the old `leftover` pointer is freed by `ft_strjoin`'s caller (`save_buffer`) and replaced with the newly joined string. The temporary `buffer` is freed once the loop exits. On any error, both `buffer` and `leftover` are freed and `NULL` is returned.
 
-This function is `static` in `get_next_line.c` (standard build) and exported (non-static) in `get_next_line_bonus.c` / declared in `get_next_line_bonus.h` (bonus build).
+This function is defined in `get_next_line.c` (standard build) without the `static` keyword, but it is **not** declared in `get_next_line.h`, so it is not part of the standard public API. In the bonus build it is declared in `get_next_line_bonus.h` and becomes an explicitly exported public function.
 
 <ParamField path="fd" type="int">
   The file descriptor to read from. Assumed valid; the calling `get_next_line` has already verified `fd >= 0` (and `fd < MAX_FD` in the bonus variant).

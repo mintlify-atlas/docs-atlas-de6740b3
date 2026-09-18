@@ -1,5 +1,5 @@
 ---
-title: "get_next_line: Read Files Line by Line in C"
+title: "get_next_line: Line-by-Line File Reading for C Programs"
 sidebarTitle: "Home"
 description: "get_next_line is a C library function that reads one line at a time from any file descriptor, with a bonus variant for multiple simultaneous FDs."
 ---
@@ -24,16 +24,16 @@ description: "get_next_line is a C library function that reads one line at a tim
 ## Key Features
 
 <CardGroup cols={2}>
-  <Card title="Single-FD Reading" icon="file-lines">
+  <Card title="Single-FD Reading" icon="file-lines" href="/usage/basic-usage">
     Read any file or stream one line at a time with a simple, consistent API that integrates easily into any C program.
   </Card>
-  <Card title="Multiple FDs (Bonus)" icon="layer-group">
+  <Card title="Multiple FDs (Bonus)" icon="layer-group" href="/usage/multiple-fds">
     The bonus variant maintains independent per-fd state for up to 10,240 open file descriptors simultaneously.
   </Card>
-  <Card title="Tunable Buffer Size" icon="sliders">
+  <Card title="Tunable Buffer Size" icon="sliders" href="/usage/buffer-size">
     Set `BUFFER_SIZE` at compile time to trade memory usage for I/O efficiency without changing a single line of code.
   </Card>
-  <Card title="Zero Dependencies" icon="cube">
+  <Card title="Zero Dependencies" icon="cube" href="/internals/how-it-works">
     Only `stdlib.h` and `unistd.h` — no third-party libraries, no build system requirements beyond a C compiler.
   </Card>
 </CardGroup>

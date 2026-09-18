@@ -1,7 +1,7 @@
 ---
 title: "get_next_line — Read One Line from a File Descriptor"
 sidebarTitle: "get_next_line"
-description: "Complete reference for char *get_next_line(int fd): parameters, return values, error conditions, and behaviour differences between standard and bonus variants."
+description: "Complete reference for get_next_line(int fd): parameters, return values, error conditions, and behaviour between standard and bonus variants."
 ---
 
 `get_next_line` reads one line at a time from an open file descriptor, advancing an internal position on each successive call. It handles files of any size by reading in fixed-size chunks of `BUFFER_SIZE` bytes, accumulating data in a static leftover buffer between calls. The returned string is heap-allocated and must be freed by the caller. When the file is exhausted or an error occurs, the function returns `NULL` and resets any leftover state for that descriptor.

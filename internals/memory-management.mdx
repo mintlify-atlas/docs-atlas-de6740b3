@@ -1,5 +1,5 @@
 ---
-title: "Memory Management in get_next_line"
+title: "get_next_line Memory: Heap Allocation and Leak Prevention"
 sidebarTitle: "Memory Management"
 description: "Understand how get_next_line allocates and frees heap memory across calls, what the caller must free, and how error paths avoid leaks."
 ---
@@ -100,7 +100,7 @@ static int read_error(ssize_t bytes_read, char *buffer, char *leftover)
 }
 ```
 
-Returning `1` signals failure; `read_and_save` propagates `NULL` up to `get_next_line`, which in turn returns `NULL` to the caller. After this point the static `leftover` pointer holds a dangling address — but because `read_error` already freed it, the next call that passes `leftover` to `read_and_save` will pass `NULL`, which is safe.
+Returning `1` signals failure; `read_and_save` propagates `NULL` up to `get_next_line`, which assigns it back to the static `leftover` (`leftover = read_and_save(fd, leftover)`) before returning `NULL` to the caller. This means the static pointer is correctly set to `NULL` after an error — not left dangling — so the next call starts from a clean state.
 
 <Warning>
   **Failing to `free()` the line returned by `get_next_line` on every iteration is the most common source of memory leaks when using this function.** Because each call allocates a new string, even a single missed `free()` inside a read loop will silently accumulate leaked memory proportional to the number of lines in the file.
@@ -156,13 +156,13 @@ Alternatively, if reading to EOF is too expensive, you can free the static lefto
 
 Run your program under Valgrind to catch any remaining leaks:
 
-```c
+```bash
 valgrind --leak-check=full --track-origins=yes ./your_program
 ```
 
 A clean run with no leaks should report:
 
-```
+```text
 LEAK SUMMARY:
    definitely lost: 0 bytes in 0 blocks
    indirectly lost: 0 bytes in 0 blocks
